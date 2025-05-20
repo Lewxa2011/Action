@@ -56,7 +56,7 @@ Action is a lightweight, statically‑typed scripting language implemented in C#
 ### Building & Running
 
 ```bash
-git clone https://github.com/your-org/ActionLanguage.git
+git clone https://github.com/Lewxa2011/Action
 cd ActionLanguage
 dotnet build
 ```
