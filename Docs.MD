@@ -178,13 +178,10 @@ print(max(3, 7));
 
 ### Built-in Functions
 
-| Function            | Description                      |
-| ------------------- | -------------------------------- |
-| `print(...)`        | Print values, newline-terminated |
-| `println(...)`      | Alias for `print`                |
-| `len(x)`            | Length of string or collection   |
-| `typeof(x)`         | Return string name of type       |
-| `assert(cond, msg)` | Abort if `cond` false            |
+| Function                                                                                     | Description                      |
+| -------------------------------------------------------------------------------------------- | -------------------------------- |
+| `print(...)`                                                                                 | Print values, newline-terminated |
+| `callNative("dllname.dll", "funcName", "retType(argType1,argType2,...)", arg1, arg2, ...)`   | call native windows methods      |
 
 ### I/O Utilities
 
