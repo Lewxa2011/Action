@@ -1,7 +1,9 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Linq.Expressions;
+using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.RegularExpressions;
 
@@ -14,40 +16,24 @@ namespace ActionLanguage
     {
         static void Main(string[] args)
         {
-            Console.WriteLine("Action Language REPL v1.0");
-            Console.WriteLine("Type 'exit' to quit");
-            Console.WriteLine();
-
             var interpreter = new Interpreter();
-            var inputBuffer = new StringBuilder();
-            bool continuationMode = false;
 
-            while (true)
+            if (args.Length > 0)
             {
-                Console.Write(continuationMode ? "... " : ">>> ");
-                string line = Console.ReadLine();
+                string filePath = args[0];
 
-                if (line.Trim() == "exit")
-                    break;
-
-                inputBuffer.AppendLine(line);
-                string currentInput = inputBuffer.ToString();
-
-                if (!AreBracesBalanced(currentInput))
+                if (!File.Exists(filePath))
                 {
-                    continuationMode = true;
-                    continue;
+                    Console.WriteLine($"File not found: {filePath}");
+                    return;
                 }
-
-                continuationMode = false;
 
                 try
                 {
-                    var result = interpreter.Execute(currentInput);
+                    string code = File.ReadAllText(filePath);
+                    var result = interpreter.Execute(code);
                     if (result != null)
-                    {
                         Console.WriteLine(result.ToString());
-                    }
                 }
                 catch (ParseException e)
                 {
@@ -65,7 +51,58 @@ namespace ActionLanguage
                     Console.WriteLine($"Error: {e.Message}");
                 }
 
-                // clear buffer for next input
+                return; // Don't enter REPL
+            }
+
+            // REPL mode
+            Console.WriteLine("Action Language REPL v1.0");
+            Console.WriteLine("Type 'exit' to quit");
+            Console.WriteLine();
+
+            var inputBuffer = new StringBuilder();
+            bool continuationMode = false;
+
+            while (true)
+            {
+                Console.Write(continuationMode ? "... " : ">>> ");
+                string line = Console.ReadLine();
+
+                if (line == null || line.Trim() == "exit")
+                    break;
+
+                inputBuffer.AppendLine(line);
+                string currentInput = inputBuffer.ToString();
+
+                if (!AreBracesBalanced(currentInput))
+                {
+                    continuationMode = true;
+                    continue;
+                }
+
+                continuationMode = false;
+
+                try
+                {
+                    var result = interpreter.Execute(currentInput);
+                    if (result != null)
+                        Console.WriteLine(result.ToString());
+                }
+                catch (ParseException e)
+                {
+                    Console.WriteLine($"Parse error: {e.Message}");
+                    Console.WriteLine(e.SourceSnippet);
+                }
+                catch (RuntimeException e)
+                {
+                    Console.WriteLine($"Runtime error: {e.Message}");
+                    if (e.StackTrace != null)
+                        Console.WriteLine(e.StackTrace);
+                }
+                catch (Exception e)
+                {
+                    Console.WriteLine($"Error: {e.Message}");
+                }
+
                 inputBuffer.Clear();
             }
         }
@@ -169,6 +206,309 @@ namespace ActionLanguage
     }
 
     /// <summary>
+    /// Represents the built-in 'CallNative' function.
+    /// Function Sig: callNative("dllname.dll", "funcName", "retType(argType1,argType2,...)", arg1, arg2, ...);
+    /// </summary>
+    public class CallNative : BuiltInCallable
+    {
+        // Define custom delegate types for each supported signature
+        public delegate void VoidFunc();
+        public delegate int IntFunc();
+        public delegate uint UIntFunc();
+        public delegate bool BoolFunc();
+        public delegate string StringFunc();
+
+        // Using specific parameter types instead of object for common system calls
+        public delegate int IntFuncInt(int arg);
+        public delegate uint UIntFuncInt(int arg);
+        public delegate bool BoolFuncInt(int arg);
+        public delegate string StringFuncInt(int arg);
+
+        // Generic object parameter versions
+        public delegate void VoidFunc1(object arg);
+        public delegate int IntFunc1(object arg);
+        public delegate uint UIntFunc1(object arg);
+        public delegate bool BoolFunc1(object arg);
+        public delegate string StringFunc1(object arg);
+
+        public delegate void VoidFunc2(object arg1, object arg2);
+        public delegate int IntFunc2(object arg1, object arg2);
+        public delegate uint UIntFunc2(object arg1, object arg2);
+        public delegate bool BoolFunc2(object arg1, object arg2);
+        public delegate string StringFunc2(object arg1, object arg2);
+
+        public delegate void VoidFunc3(object arg1, object arg2, object arg3);
+        public delegate int IntFunc3(object arg1, object arg2, object arg3);
+        public delegate uint UIntFunc3(object arg1, object arg2, object arg3);
+        public delegate bool BoolFunc3(object arg1, object arg2, object arg3);
+        public delegate string StringFunc3(object arg1, object arg2, object arg3);
+
+        public delegate void VoidFunc4(object arg1, object arg2, object arg3, object arg4);
+        public delegate int IntFunc4(object arg1, object arg2, object arg3, object arg4);
+        public delegate uint UIntFunc4(object arg1, object arg2, object arg3, object arg4);
+        public delegate bool BoolFunc4(object arg1, object arg2, object arg3, object arg4);
+        public delegate string StringFunc4(object arg1, object arg2, object arg3, object arg4);
+
+        public CallNative() : base("callNative") { }
+
+        public override object Call(Interpreter interpreter, List<object> arguments)
+        {
+            // Expect: callNative("dllname.dll", "funcName", "retType(argType1,argType2,...)", arg1, arg2, ...)
+            if (arguments.Count < 3)
+                throw new ArgumentException("callNative requires at least 3 arguments: dll, funcName, signature, [args...]");
+
+            string dllPath = interpreter.ConvertToString(arguments[0]);
+            string funcName = interpreter.ConvertToString(arguments[1]);
+            string signature = interpreter.ConvertToString(arguments[2]);
+            var argValues = arguments.Skip(3).ToArray();
+
+            // Parse signature: e.g. "int(int,string,bool)"
+            ParseSignature(signature, out Type returnType, out Type[] paramTypes, out string[] paramTypeNames);
+
+            if (paramTypes.Length != argValues.Length)
+                throw new ArgumentException($"Signature expects {paramTypes.Length} parameters but got {argValues.Length}");
+
+            // Convert each arg to the appropriate .NET type
+            object[] convertedArgs = new object[argValues.Length];
+            for (int i = 0; i < argValues.Length; i++)
+            {
+                try
+                {
+                    // Handle primitive type conversions properly
+                    if (paramTypes[i] == typeof(int) && argValues[i] is double d)
+                    {
+                        convertedArgs[i] = (int)d;
+                    }
+                    else if (paramTypes[i] == typeof(uint) && argValues[i] is double d2)
+                    {
+                        convertedArgs[i] = (uint)d2;
+                    }
+                    else if (paramTypes[i] == typeof(bool) && argValues[i] is double d3)
+                    {
+                        convertedArgs[i] = d3 != 0;
+                    }
+                    else
+                    {
+                        convertedArgs[i] = Convert.ChangeType(argValues[i], paramTypes[i]);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    throw new ArgumentException($"Failed to convert argument {i} from {argValues[i]?.GetType().Name ?? "null"} to {paramTypes[i].Name}: {ex.Message}");
+                }
+            }
+
+            // Load the library and get a function pointer
+            IntPtr libHandle = NativeLibrary.Load(dllPath);
+            IntPtr fnPtr = NativeLibrary.GetExport(libHandle, funcName);
+
+            // Create and invoke the appropriate delegate based on signature
+            return InvokeNativeFunction(fnPtr, returnType, paramTypeNames, convertedArgs);
+        }
+
+        private object InvokeNativeFunction(IntPtr fnPtr, Type returnType, string[] paramTypeNames, object[] args)
+        {
+            int paramCount = args.Length;
+
+            if (returnType == typeof(void))
+            {
+                switch (paramCount)
+                {
+                    case 0:
+                        var voidFunc = Marshal.GetDelegateForFunctionPointer<VoidFunc>(fnPtr);
+                        voidFunc();
+                        return null;
+                    case 1:
+                        var voidFunc1 = Marshal.GetDelegateForFunctionPointer<VoidFunc1>(fnPtr);
+                        voidFunc1(args[0]);
+                        return null;
+                    case 2:
+                        var voidFunc2 = Marshal.GetDelegateForFunctionPointer<VoidFunc2>(fnPtr);
+                        voidFunc2(args[0], args[1]);
+                        return null;
+                    case 3:
+                        var voidFunc3 = Marshal.GetDelegateForFunctionPointer<VoidFunc3>(fnPtr);
+                        voidFunc3(args[0], args[1], args[2]);
+                        return null;
+                    case 4:
+                        var voidFunc4 = Marshal.GetDelegateForFunctionPointer<VoidFunc4>(fnPtr);
+                        voidFunc4(args[0], args[1], args[2], args[3]);
+                        return null;
+                    default:
+                        throw new NotSupportedException($"Functions with {paramCount} parameters are not supported");
+                }
+            }
+            else if (returnType == typeof(int))
+            {
+                switch (paramCount)
+                {
+                    case 0:
+                        var intFunc = Marshal.GetDelegateForFunctionPointer<IntFunc>(fnPtr);
+                        return intFunc();
+                    case 1:
+                        // For system calls like GetSystemMetrics, use strongly typed delegates
+                        if (paramTypeNames[0] == "int" && args[0] is int intArg)
+                        {
+                            var intFuncInt = Marshal.GetDelegateForFunctionPointer<IntFuncInt>(fnPtr);
+                            return intFuncInt(intArg);
+                        }
+                        else
+                        {
+                            var intFunc1 = Marshal.GetDelegateForFunctionPointer<IntFunc1>(fnPtr);
+                            return intFunc1(args[0]);
+                        }
+                    case 2:
+                        var intFunc2 = Marshal.GetDelegateForFunctionPointer<IntFunc2>(fnPtr);
+                        return intFunc2(args[0], args[1]);
+                    case 3:
+                        var intFunc3 = Marshal.GetDelegateForFunctionPointer<IntFunc3>(fnPtr);
+                        return intFunc3(args[0], args[1], args[2]);
+                    case 4:
+                        var intFunc4 = Marshal.GetDelegateForFunctionPointer<IntFunc4>(fnPtr);
+                        return intFunc4(args[0], args[1], args[2], args[3]);
+                    default:
+                        throw new NotSupportedException($"Functions with {paramCount} parameters are not supported");
+                }
+            }
+            else if (returnType == typeof(uint))
+            {
+                switch (paramCount)
+                {
+                    case 0:
+                        var uintFunc = Marshal.GetDelegateForFunctionPointer<UIntFunc>(fnPtr);
+                        return uintFunc();
+                    case 1:
+                        if (paramTypeNames[0] == "int" && args[0] is int intArg)
+                        {
+                            var uintFuncInt = Marshal.GetDelegateForFunctionPointer<UIntFuncInt>(fnPtr);
+                            return uintFuncInt(intArg);
+                        }
+                        else
+                        {
+                            var uintFunc1 = Marshal.GetDelegateForFunctionPointer<UIntFunc1>(fnPtr);
+                            return uintFunc1(args[0]);
+                        }
+                    case 2:
+                        var uintFunc2 = Marshal.GetDelegateForFunctionPointer<UIntFunc2>(fnPtr);
+                        return uintFunc2(args[0], args[1]);
+                    case 3:
+                        var uintFunc3 = Marshal.GetDelegateForFunctionPointer<UIntFunc3>(fnPtr);
+                        return uintFunc3(args[0], args[1], args[2]);
+                    case 4:
+                        var uintFunc4 = Marshal.GetDelegateForFunctionPointer<UIntFunc4>(fnPtr);
+                        return uintFunc4(args[0], args[1], args[2], args[3]);
+                    default:
+                        throw new NotSupportedException($"Functions with {paramCount} parameters are not supported");
+                }
+            }
+            else if (returnType == typeof(bool))
+            {
+                switch (paramCount)
+                {
+                    case 0:
+                        var boolFunc = Marshal.GetDelegateForFunctionPointer<BoolFunc>(fnPtr);
+                        return boolFunc();
+                    case 1:
+                        if (paramTypeNames[0] == "int" && args[0] is int intArg)
+                        {
+                            var boolFuncInt = Marshal.GetDelegateForFunctionPointer<BoolFuncInt>(fnPtr);
+                            return boolFuncInt(intArg);
+                        }
+                        else
+                        {
+                            var boolFunc1 = Marshal.GetDelegateForFunctionPointer<BoolFunc1>(fnPtr);
+                            return boolFunc1(args[0]);
+                        }
+                    case 2:
+                        var boolFunc2 = Marshal.GetDelegateForFunctionPointer<BoolFunc2>(fnPtr);
+                        return boolFunc2(args[0], args[1]);
+                    case 3:
+                        var boolFunc3 = Marshal.GetDelegateForFunctionPointer<BoolFunc3>(fnPtr);
+                        return boolFunc3(args[0], args[1], args[2]);
+                    case 4:
+                        var boolFunc4 = Marshal.GetDelegateForFunctionPointer<BoolFunc4>(fnPtr);
+                        return boolFunc4(args[0], args[1], args[2], args[3]);
+                    default:
+                        throw new NotSupportedException($"Functions with {paramCount} parameters are not supported");
+                }
+            }
+            else if (returnType == typeof(string))
+            {
+                switch (paramCount)
+                {
+                    case 0:
+                        var stringFunc = Marshal.GetDelegateForFunctionPointer<StringFunc>(fnPtr);
+                        return stringFunc();
+                    case 1:
+                        if (paramTypeNames[0] == "int" && args[0] is int intArg)
+                        {
+                            var stringFuncInt = Marshal.GetDelegateForFunctionPointer<StringFuncInt>(fnPtr);
+                            return stringFuncInt(intArg);
+                        }
+                        else
+                        {
+                            var stringFunc1 = Marshal.GetDelegateForFunctionPointer<StringFunc1>(fnPtr);
+                            return stringFunc1(args[0]);
+                        }
+                    case 2:
+                        var stringFunc2 = Marshal.GetDelegateForFunctionPointer<StringFunc2>(fnPtr);
+                        return stringFunc2(args[0], args[1]);
+                    case 3:
+                        var stringFunc3 = Marshal.GetDelegateForFunctionPointer<StringFunc3>(fnPtr);
+                        return stringFunc3(args[0], args[1], args[2]);
+                    case 4:
+                        var stringFunc4 = Marshal.GetDelegateForFunctionPointer<StringFunc4>(fnPtr);
+                        return stringFunc4(args[0], args[1], args[2], args[3]);
+                    default:
+                        throw new NotSupportedException($"Functions with {paramCount} parameters are not supported");
+                }
+            }
+            else
+            {
+                throw new NotSupportedException($"Return type {returnType.Name} is not supported");
+            }
+        }
+
+        private static void ParseSignature(string sig, out Type retType, out Type[] paramTypes, out string[] paramTypeNames)
+        {
+            // Very minimal parser: split at first '('
+            int idx = sig.IndexOf('(');
+            if (idx < 0 || !sig.EndsWith(")"))
+                throw new ArgumentException("Invalid signature format. Expected retType(argType,...)");
+
+            string retName = sig.Substring(0, idx).Trim();
+            string argsPart = sig.Substring(idx + 1, sig.Length - idx - 2).Trim();
+
+            retType = GetTypeByName(retName);
+
+            if (string.IsNullOrEmpty(argsPart))
+            {
+                paramTypes = Array.Empty<Type>();
+                paramTypeNames = Array.Empty<string>();
+            }
+            else
+            {
+                string[] typeNames = argsPart.Split(',')
+                    .Select(s => s.Trim())
+                    .ToArray();
+
+                paramTypeNames = typeNames;
+                paramTypes = typeNames.Select(GetTypeByName).ToArray();
+            }
+        }
+
+        private static Type GetTypeByName(string name) => name switch
+        {
+            "void" => typeof(void),
+            "int" => typeof(int),
+            "uint" => typeof(uint),
+            "bool" => typeof(bool),
+            "string" => typeof(string),
+            _ => throw new NotSupportedException($"Type '{name}' not supported in callNative")
+        };
+    }
+
+    /// <summary>
     /// Custom exception for parse errors
     /// </summary>
     public class ParseException : Exception
@@ -229,6 +569,7 @@ namespace ActionLanguage
 
             // BUILT-IN FUNCTIONS
             globalEnvironment.Define("print", new PrintFunction());
+            globalEnvironment.Define("callNative", new CallNative());
         }
 
         public object Execute(string code)
